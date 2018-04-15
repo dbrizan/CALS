@@ -6,7 +6,6 @@ from torch.autograd import Variable
 import os
 
 cuda_enabled = torch.cuda.is_available()
-#cuda_enabled = False
 
 class ivie_data(Dataset):
 
@@ -16,12 +15,10 @@ class ivie_data(Dataset):
         self.feat_len = featlen
         self.dataset = dataset   # train, test, dev
 
-        # Persist the encoder to be used against other material
+        # Persist the encoder for possible future use.
         self.__label_encoder__ = encoder
-        # Persist a file list and use it in downstream processes
+        # Persist a file list -- may need it for printing & reporting
         self.file_descriptions = None
-        # self.file_indices = []
-        # self.files_called = []
 
         self.instance_list = []
         self.instance_label = []
@@ -29,15 +26,8 @@ class ivie_data(Dataset):
         self.__load_features_and_labels__(self.__get_label_column__(label))
 
 
-    '''
-    def get_files_called(self):
-        print('Generating files...')
-        if len(self.files_called) <= 0:
-            for i in self.file_indices:
-                self.files_called.append(self.file_descriptions[i])
-        # self.files_called.append(self.file_descriptions[index])
-        return self.files_called
-    '''
+    def get_files(self):
+        return self.file_descriptions
 
 
     def get_encoder(self):
@@ -48,9 +38,17 @@ class ivie_data(Dataset):
         if label == 'speaker':
             return 2
         if label == 'gender':
-            return 3
+            return 5
         if label == 'region':
+            return 6
+        if label == 'generation':
+            return 3
+        if label == 'decade':
             return 4
+        if label == 'year':
+            return 7
+        if label == 'education':
+            return 10
 
 
     def __get_pad_length__(self):
@@ -62,7 +60,7 @@ class ivie_data(Dataset):
     def __get_ivie_material__(self):
         import csv
 
-        label_file = 'listing.csv'
+        label_file = '/home/dgbrizan/project/CALS_tools/file_listing.csv'
         descriptor_list = []
         all_files = []
 
@@ -82,13 +80,14 @@ class ivie_data(Dataset):
         #wav, sr = librosa.load(file_name, mono=True)
         wav, sr = librosa.load(file_name, sr=None, mono=True)
         mfcc = librosa.feature.mfcc(wav, sr, n_mfcc=self.feat_len)
-        #print("mfcc num: {}, feat dim: {}".format(len(mfcc[0]), len(mfcc)))
         return mfcc
+
 
     def __get_melfilter_bank_matrix__(self, file_name):
         import librosa
         import numpy
         import scipy
+
         eps = numpy.spacing(1)
         wav, sr = librosa.load(file_name, sr=None, mono=True)
         n_fft = 512
@@ -106,9 +105,8 @@ class ivie_data(Dataset):
         mel_basis = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels,
                                         fmin=lower_f, fmax=upper_f, htk=htk)
         mel_spectrum = numpy.dot(mel_basis, magnitude_spectrogram)
-        #print("len: {}, dim, {}".format(len(mel_spectrum[0]), len(mel_spectrum)))
         return mel_spectrum
-        #mfcc = librosa.feature.mfcc(S=librosa.logamplitude(mel_spectrum))
+ 
 
     def __pad_data__(self, series):
         import numpy as np
@@ -140,23 +138,14 @@ class ivie_data(Dataset):
         # Change "X" to padded version
         self.instance_list = self.__pad_data__(self.instance_list)
 
-        # Change "Y" to one-hot encoding:
+        # Encode "Y"
         if self.__label_encoder__ == None:
             self.__label_encoder__ = sklearn.preprocessing.LabelEncoder()
-        # label_encoder = sklearn.preprocessing.LabelEncoder()
         self.__label_encoder__.fit(file_label)
         self.instance_label = self.__label_encoder__.transform(file_label).flatten()
-        '''
-        label_binarizer = sklearn.preprocessing.LabelBinarizer()
-        label_binarizer.fit(file_label)
-        self.instance_label = label_binarizer.transform(file_label).flatten() 
-        '''
 
 
     def __getitem__(self, index):
-        # if self.dataset == 'test':
-        #     print('Item %d' % (index))
-        # self.file_indices.append(index)
         return self.instance_list[index], self.instance_label[index]
 
 
@@ -174,10 +163,10 @@ class BiRNN(nn.Module):
         self.num_classes = num_classes
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers,
                             batch_first=True, bidirectional=True)
+        #self.fc = nn.Dropout(p=0.75, inplace=False)
         self.fc = nn.Dropout(p=0.5, inplace=False)
         self.linear = nn.Linear(self.hidden_size*2, self.num_classes)
 
-        #self.fc = nn.Dropout(p=0.75, inplace=False)
         if cuda_enabled:
             self.lstm = self.lstm.cuda()
             self.fc = self.fc.cuda()
@@ -185,8 +174,6 @@ class BiRNN(nn.Module):
 
     def forward(self, x):
         # Set initial states
-        #h0 = Variable(torch.zeros(self.num_layers*2, x.size(0), self.hidden_size).cuda()) # 2 for bidirection
-        #c0 = Variable(torch.zeros(self.num_layers*2, x.size(0), self.hidden_size).cuda())
         h0 = Variable(torch.zeros(self.num_layers*2, x.size(0), self.hidden_size)) # 2 for bidirection
         c0 = Variable(torch.zeros(self.num_layers*2, x.size(0), self.hidden_size))
         if cuda_enabled:
@@ -205,26 +192,28 @@ class BiRNN(nn.Module):
         out = F.log_softmax(self.linear(out), dim=1)
         return out
 
+
 def main_biRNN():
     import datetime
     from sklearn.metrics import accuracy_score, confusion_matrix
 
-    # Keep timing
+    # Keep timing -- for future reporting
     timing = dict()
 
     # Data description
     input_size = 2939  # 2939, 20 # TODO: Determine this from the data
     sequence_length = 40  # TODO: Determine this from the data
     # Data
-    label = 'region'  # gender, region, speaker
+    label = 'gender'  # gender, region, speaker
 
     timing['start'] = datetime.datetime.now()
 
     train = ivie_data('train', label, padlen=input_size, featlen=sequence_length)
-    # encoder = train.get_encoder()
     print('IViE train data items: {}'.format(train.__len__()))
+
     dev = ivie_data('dev', label, encoder=train.get_encoder())
     print('IViE dev data items: {}'.format(dev.__len__()))
+
     test = ivie_data('test', label, encoder=train.get_encoder())
     print('IViE test data items: {}'.format(test.__len__()))
 
@@ -241,14 +230,14 @@ def main_biRNN():
     print('Starting loader')
     timing['training'] = datetime.datetime.now()
     train_loader = torch.utils.data.DataLoader(train, batch_size=batch_size, shuffle=True, **kwargs)
-    test_loader = torch.utils.data.DataLoader(test, batch_size=batch_size, shuffle=True, **kwargs)
+    test_loader = torch.utils.data.DataLoader(test, batch_size=batch_size, shuffle=False, **kwargs)
 
     # The net... and training it
     hidden_size = 128
     num_layers = 2
-    num_classes = 9  # TODO: Determine this from the data
+    # num_classes = 9  # TODO: Determine this from the data
+    num_classes = 2  # TODO: Determine this from the data
     learning_rate = 0.0001
-    # num_epochs = 10  # For debugging; change to below for testing
     num_epochs = 20000
 
     # The network
@@ -265,8 +254,6 @@ def main_biRNN():
         iteration_count = 0.
         for i, (mfcc, labels) in enumerate(train_loader):
             iteration_count += 1.
-            # mfcc = Variable(mfcc.view(-1, sequence_length, input_size).cuda())
-            # labels = Variable(labels.cuda())
             mfcc = Variable(mfcc.view(-1, sequence_length, input_size))
             labels = Variable(labels)
             if cuda_enabled:
@@ -276,10 +263,6 @@ def main_biRNN():
             # Forward + Backward + Optimize
             optimizer.zero_grad()
             outputs = rnn(mfcc)
-
-            # outputs = outputs[:, -2:]
-            # print("outputs: {}".format(outputs))
-            # print("labels: {}".format(labels))
 
             loss = criterion(outputs, labels)
             loss_total += loss.data[0]
@@ -291,7 +274,6 @@ def main_biRNN():
                       % (epoch + 1, num_epochs, i + 1, len(train) // batch_size, loss.data[0]))
         current_epoch_loss = loss_total / iteration_count
         # Optimise training epochs: only continue training while the loss drops
-        # if current_epoch_loss < 0.02 and current_epoch_loss >= epoch_loss:
         if current_epoch_loss >= epoch_loss:
             break
         epoch_loss = current_epoch_loss
@@ -307,72 +289,36 @@ def main_biRNN():
     predicted_list = []
     label_list = []
     for mfcc, labels in test_loader:#test_loader
-        # mfcc = Variable(mfcc.view(-1, sequence_length, input_size).cuda())
-        # outputs = rnn(mfcc).cuda()
         mfcc = Variable(mfcc.view(-1, sequence_length, input_size))
-        #outputs = outputs[:, -2:]
         if cuda_enabled:
             mfcc = mfcc.cuda()
 
         outputs = rnn(mfcc)
         _, predicted = torch.max(outputs.data, 1)
         total += labels.size(0)
-        # correct += (predicted == labels).sum()
         for p, l in zip(predicted, labels):
-            # print('Predicted: %d... label: %d' % (p, l))
-            
             predicted_list.append(p)
             label_list.append(l)
             if p == l:
                 correct += 1.0
     timing['testing'] = datetime.datetime.now() - timing['testing']
 
-    '''
-    print('Labels: %d' % (len(label_list)))
-    print(label_list)
-    print('Predicted: %d' % (len(predicted_list)))
-    print(predicted_list)
-    '''
-
-    # print('total: {}, correct: {}'.format(total, correct))
-    # print('Test Accuracy of the model on the test speech: %2f %%' % (100.0 * correct / total))
     print('')
-    # of = open('results.txt', 'w')
-    # print('Writing predictions to results.txt')
-    # print('Files: %d; labels: %d; predictions: %d' % (len(test.get_files_called()), len(label_list), len(predicted_list)))
-    # for f, a, p in zip(test.get_files_called(), label_list, predicted_list):
-    # for a, p in zip(label_list, predicted_list):
-    #     of.write(str(a))
-    #     of.write(' ')
-    #     of.write(f[3])
-    #     '''
-    #     of.write(str(p))
-    #     of.write(' ')
-    #     of.write(str(a))
-    #     of.write(' ')
-    #     of.write(f[0])
-    #     of.write(' ')
-    #     of.write(f[2])
-    #     of.write(' ')
-    #     of.write(f[3])
-    #     of.write(' ')
-    #     of.write(f[4])
-    #     # '''
-    #     of.write('\n')
-        # print(p, a, f)
-    # of.close()
-    # print('')
+    print('Writing predictions to predictions.csv\n')
+    of = open('predictions.csv', 'w')
+    of.write('Predicted,Actual,File,Material,Speaker,Gender,Region\n')
+    for f, a, p in zip(test.get_files(), label_list, predicted_list):
+        of.write(str(p) + ',' + str(a) + ',' + ','.join(f) + '\n')
+    of.close()
 
     print('Timing (feature extraction, training, timing)')
     print('=============================================')
     print(timing['features'])
     print(timing['training'])
     print(timing['testing'])
-    print('\n')
-    # print('========')
-    # print(accuracy_score(labels, predicted))
+    print('')
     print('=============================================')
-    print('\n')
+    print('')
     print('Confusion Matrix')
     print('================')
     print(train.get_encoder().classes_)
@@ -383,7 +329,7 @@ def main_biRNN():
     
 
     # Save the Model
-    # torch.save(rnn.state_dict(), 'lstm.pkl')
+    # torch.save(rnn.state_dict(), 'ivie.pkl')
 
 if __name__ == '__main__':
     main_biRNN()
