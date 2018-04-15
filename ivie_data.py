@@ -154,8 +154,8 @@ class ivie_data(Dataset):
 
 
     def __getitem__(self, index):
-        if self.dataset == 'test':
-            print('Item %d' % (index))
+        # if self.dataset == 'test':
+        #     print('Item %d' % (index))
         # self.file_indices.append(index)
         return self.instance_list[index], self.instance_label[index]
 
@@ -319,7 +319,7 @@ def main_biRNN():
         total += labels.size(0)
         # correct += (predicted == labels).sum()
         for p, l in zip(predicted, labels):
-            print('Predicted: %d... label: %d' % (p, l))
+            # print('Predicted: %d... label: %d' % (p, l))
             
             predicted_list.append(p)
             label_list.append(l)
